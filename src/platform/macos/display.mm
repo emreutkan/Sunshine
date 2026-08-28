@@ -300,10 +300,13 @@ namespace platf {
   /**
    * @brief Report whether encoder backends should be probed again before streaming.
    *
-   * @return Always `true` because macOS GPU changes are not tracked by this backend.
+   * @return Always `false` because macOS video encoders are fixed for the life of the process.
    */
   bool needs_encoder_reenumeration() {
-    // We don't track GPU state, so we will always reenumerate. Fortunately, it is fast on macOS.
-    return true;
+    // VideoToolbox encoder availability is a property of the SoC and cannot change while
+    // we are running, so a probe result stays valid. Re-probing is not free either: each
+    // candidate encoder builds and tears down a fresh AVCaptureSession, which costs a
+    // noticeable fraction of a second on every client connection.
+    return false;
   }
 }  // namespace platf
