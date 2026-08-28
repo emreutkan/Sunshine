@@ -17,6 +17,7 @@
 #include <ifaddrs.h>
 
 // platform includes
+#include <ApplicationServices/ApplicationServices.h>
 #include <arpa/inet.h>
 #include <dlfcn.h>
 #include <Foundation/Foundation.h>
@@ -74,6 +75,17 @@ namespace platf {
   }
 
   std::unique_ptr<deinit_t> init() {
+    // Accessibility gates CGEventPost; without it clicks and keys are silently dropped
+    // while cursor motion still works via CGWarpMouseCursorPosition. Prompt so the app
+    // gets added to the Accessibility list instead of failing invisibly.
+    NSDictionary *ax_options = @{(__bridge NSString *) kAXTrustedCheckOptionPrompt: @YES};
+    if (!AXIsProcessTrustedWithOptions((__bridge CFDictionaryRef) ax_options)) {
+      BOOST_LOG(error) << "No accessibility permission! Mouse buttons, scrolling and keyboard input will not work."sv;
+      BOOST_LOG(error) << "Please activate it in 'System Settings' -> 'Privacy & Security' -> 'Accessibility'"sv;
+    } else {
+      BOOST_LOG(info) << "Accessibility permission granted"sv;
+    }
+
     // This will generate a warning about CGPreflightScreenCaptureAccess and
     // CGRequestScreenCaptureAccess being unavailable before macOS 10.15, but
     // we have a guard to prevent it from being called on those earlier systems.
