@@ -14,6 +14,10 @@ draw its own.
 Ctrl+Alt+Shift+Z releases the pointer and keyboard back to Windows without
 disconnecting. Click back into the video to re-grab.
 
+Ctrl+Alt+Shift+D minimizes the stream. Set Moonlight's display mode to
+**borderless windowed** to make that fast — exclusive fullscreen has to change
+the display mode on the way out and back in.
+
 ## Build
 
 Dependencies:
