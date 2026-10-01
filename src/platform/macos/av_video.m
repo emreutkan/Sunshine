@@ -72,11 +72,16 @@
     dispatch_queue_t recordingQueue = dispatch_queue_create("videoCaptureQueue", qos);
     [videoOutput setSampleBufferDelegate:self queue:recordingQueue];
 
-    [self.session stopRunning];
+    // Mutate the graph in place. A stopRunning/startRunning pair renegotiates the whole
+    // capture session, which is slow and is a deadlock hazard when called from the sample
+    // buffer delegate below.
+    [self.session beginConfiguration];
 
     if ([self.session canAddOutput:videoOutput]) {
       [self.session addOutput:videoOutput];
     } else {
+      [self.session commitConfiguration];
+      dispatch_release(recordingQueue);
       [videoOutput release];
       return nil;
     }
@@ -88,7 +93,11 @@
     [self.captureCallbacks setObject:frameCallback forKey:videoConnection];
     [self.captureSignals setObject:signal forKey:videoConnection];
 
-    [self.session startRunning];
+    [self.session commitConfiguration];
+
+    // The session and videoOutputs both retain these now.
+    dispatch_release(recordingQueue);
+    [videoOutput release];
 
     return signal;
   }
@@ -102,13 +111,13 @@
   if (callback != nil) {
     if (!callback(sampleBuffer)) {
       @synchronized(self) {
-        [self.session stopRunning];
+        [self.session beginConfiguration];
         [self.captureCallbacks removeObjectForKey:connection];
         [self.session removeOutput:[self.videoOutputs objectForKey:connection]];
         [self.videoOutputs removeObjectForKey:connection];
         dispatch_semaphore_signal([self.captureSignals objectForKey:connection]);
         [self.captureSignals removeObjectForKey:connection];
-        [self.session startRunning];
+        [self.session commitConfiguration];
       }
     }
   }
