@@ -842,7 +842,17 @@ namespace display_device {
   }
 
   void configure_display(const config::video_t &video_config, const rtsp_stream::launch_session_t &session) {
+#ifdef __APPLE__
+    // Topology is owned by the first/last streaming callbacks on macOS. The
+    // settings manager still handles mode configuration and its persistence.
+    auto effective_config = video_config;
+    if (effective_config.dd.configuration_option == config::video_t::dd_t::config_option_e::ensure_only_display) {
+      effective_config.dd.configuration_option = config::video_t::dd_t::config_option_e::verify_only;
+    }
+    const auto result {parse_configuration(effective_config, session)};
+#else
     const auto result {parse_configuration(video_config, session)};
+#endif
     if (const auto *parsed_config {std::get_if<SingleDisplayConfiguration>(&result)}; parsed_config) {
       configure_display(*parsed_config);
       return;

@@ -13,6 +13,8 @@
 #endif
 
 // standard includes
+#include <charconv>
+#include <mutex>
 #include <fcntl.h>
 #include <ifaddrs.h>
 
@@ -33,6 +35,7 @@
 
 // local includes
 #include "misc.h"
+#include "src/config.h"
 #include "src/entry_handler.h"
 #include "src/logging.h"
 #include "src/platform/common.h"
@@ -273,12 +276,128 @@ namespace platf {
     // Unimplemented
   }
 
+  namespace {
+    /** @brief Original active display geometry for a streaming-only configuration. */
+    struct stream_display_state_t {
+      CGDirectDisplayID id;  ///< Display to restore.
+      CGPoint origin;  ///< Original desktop origin.
+      CGDirectDisplayID mirror;  ///< Original mirror source, or zero.
+    };
+
+    std::mutex stream_display_mutex;  ///< Serializes display apply and restore.
+    std::vector<stream_display_state_t> stream_display_state;  ///< Pre-stream active displays.
+    using configure_enabled_t = CGError (*)(CGDisplayConfigRef, CGDirectDisplayID, bool);  ///< Private enable API.
+
+    /** @brief Resolve the optional macOS display-enable API. @return Function or null. */
+    configure_enabled_t configure_enabled() {
+      static auto function = reinterpret_cast<configure_enabled_t>(dlsym(RTLD_DEFAULT, "CGSConfigureDisplayEnabled"));
+      return function;
+    }
+
+    /** @brief Restore pre-stream geometry while holding stream_display_mutex. */
+    void restore_stream_displays() {
+      if (stream_display_state.empty()) {
+        return;
+      }
+      const auto enable = configure_enabled();
+      CGDisplayConfigRef transaction {};
+      if (!enable || CGBeginDisplayConfiguration(&transaction) != kCGErrorSuccess) {
+        BOOST_LOG(error) << "Could not begin restoring pre-stream displays";
+        return;
+      }
+      for (const auto &display : stream_display_state) {
+        const auto enabled = enable(transaction, display.id, true);
+        if (enabled != kCGErrorSuccess && !CGDisplayIsOnline(display.id)) {
+          // A display may have been unplugged during the stream. Disabled
+          // displays still need an enable attempt even if reported offline.
+          continue;
+        }
+        if (enabled != kCGErrorSuccess ||
+            CGConfigureDisplayMirrorOfDisplay(transaction, display.id, display.mirror) != kCGErrorSuccess ||
+            CGConfigureDisplayOrigin(transaction, display.id, display.origin.x, display.origin.y) != kCGErrorSuccess) {
+          CGCancelDisplayConfiguration(transaction);
+          BOOST_LOG(error) << "Could not restore display " << display.id;
+          return;
+        }
+      }
+      if (CGCompleteDisplayConfiguration(transaction, kCGConfigureForAppOnly) != kCGErrorSuccess) {
+        BOOST_LOG(error) << "Could not commit pre-stream display restoration";
+        return;
+      }
+      stream_display_state.clear();
+      BOOST_LOG(info) << "Restored pre-stream displays";
+    }
+  }  // namespace
+
   void streaming_will_start() {
-    // Nothing to do
+    if (config::video.dd.configuration_option != config::video_t::dd_t::config_option_e::ensure_only_display) {
+      return;
+    }
+    std::lock_guard lock {stream_display_mutex};
+    if (!stream_display_state.empty()) {
+      restore_stream_displays();
+      if (!stream_display_state.empty()) {
+        return;
+      }
+    }
+    CGDirectDisplayID target {};
+    const auto &name = config::video.output_name;
+    const auto [end, parse_error] = std::from_chars(name.data(), name.data() + name.size(), target);
+    if (parse_error != std::errc {} || end != name.data() + name.size() || !CGDisplayIsActive(target)) {
+      BOOST_LOG(error) << "Exclusive streaming requires an active numeric output_name";
+      return;
+    }
+    const auto enable = configure_enabled();
+    CGDirectDisplayID displays[32];
+    uint32_t count {};
+    if (!enable || CGGetActiveDisplayList(32, displays, &count) != kCGErrorSuccess || count == 0 || count == 32) {
+      BOOST_LOG(error) << "Cannot enumerate or disable macOS displays";
+      return;
+    }
+    for (uint32_t i = 0; i < count; ++i) {
+      stream_display_state.push_back({displays[i], CGDisplayBounds(displays[i]).origin, CGDisplayMirrorsDisplay(displays[i])});
+    }
+    CGDisplayConfigRef transaction {};
+    if (CGBeginDisplayConfiguration(&transaction) != kCGErrorSuccess) {
+      stream_display_state.clear();
+      return;
+    }
+    CGError result = CGConfigureDisplayMirrorOfDisplay(transaction, target, kCGNullDirectDisplay);
+    if (result == kCGErrorSuccess) {
+      result = CGConfigureDisplayOrigin(transaction, target, 0, 0);
+    }
+    for (uint32_t i = 0; i < count && result == kCGErrorSuccess; ++i) {
+      if (displays[i] != target) {
+        result = enable(transaction, displays[i], false);
+      }
+    }
+    if (result != kCGErrorSuccess) {
+      CGCancelDisplayConfiguration(transaction);
+      stream_display_state.clear();
+      BOOST_LOG(error) << "macOS rejected exclusive display configuration: " << result;
+      return;
+    }
+    // App-scoped changes are also undone by WindowServer if Sunshine exits.
+    result = CGCompleteDisplayConfiguration(transaction, kCGConfigureForAppOnly);
+    if (result != kCGErrorSuccess) {
+      BOOST_LOG(error) << "macOS could not commit exclusive display configuration: " << result;
+      restore_stream_displays();
+      return;
+    }
+    uint32_t active_count {};
+    CGDirectDisplayID active[32];
+    if (CGGetActiveDisplayList(32, active, &active_count) != kCGErrorSuccess || active_count != 1 || active[0] != target) {
+      BOOST_LOG(error) << "macOS did not disable the other displays; restoring layout";
+      restore_stream_displays();
+      return;
+    }
+    CGWarpMouseCursorPosition(CGPointMake(128, 128));
+    BOOST_LOG(info) << "Streaming exclusively on display " << target;
   }
 
   void streaming_will_stop() {
-    // Nothing to do
+    std::lock_guard lock {stream_display_mutex};
+    restore_stream_displays();
   }
 
   static pid_t g_restart_child_pid = 0;  ///< PID of the restarted child process for signal forwarding.

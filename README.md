@@ -63,3 +63,20 @@ Sunshine needs Screen Recording and Accessibility. Accessibility gates
 `CGEventPost`; without it the pointer still moves but clicks, scrolling and
 keystrokes are silently dropped. Both are requested at startup and the result
 is logged to `~/.config/sunshine/sunshine.log`.
+
+## Virtual display sessions on macOS
+
+With a running virtual display, set `output_name` to its numeric CoreGraphics ID
+and `dd_configuration_option = ensure_only_display`. Sunshine makes that display
+the only active display before capture starts, then restores the original active
+displays and their origins when the last client disconnects. The changes are
+app-scoped so WindowServer also restores the layout when Sunshine exits.
+Mouse coordinates follow the current primary display after a layout change.
+
+Set `dd_resolution_option = disabled` and `dd_refresh_rate_option = disabled`
+to keep the virtual display's existing mode. This uses a private macOS enable API;
+if the OS rejects disabling displays, Sunshine logs the failure and restores the
+layout. The virtual-display helper must remain running during streaming.
+
+To create the virtual display and start Sunshine automatically at login, run
+`./scripts/macos/virtual-display/install.sh`. See [automation setup](scripts/macos/virtual-display/README.md).

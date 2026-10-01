@@ -2234,14 +2234,21 @@ namespace stream {
 
       session.pingTimeout = std::chrono::steady_clock::now() + config::stream.ping_timeout;
 
+#ifdef __APPLE__
+      // Complete topology changes before capture reads display geometry.
+      if (running_sessions == 0) {
+        platf::streaming_will_start();
+      }
+#endif
       session.audioThread = std::jthread {audioThread, &session};
       session.videoThread = std::jthread {videoThread, &session};
-
       session.state.store(state_e::RUNNING, std::memory_order_relaxed);
 
       // If this is the first session, invoke the platform callbacks
       if (++running_sessions == 1) {
+#ifndef __APPLE__
         platf::streaming_will_start();
+#endif
 #if defined SUNSHINE_TRAY && SUNSHINE_TRAY >= 1
         system_tray::update_tray_playing(proc::proc.get_last_run_app_name());
 #endif
