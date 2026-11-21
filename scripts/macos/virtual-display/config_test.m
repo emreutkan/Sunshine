@@ -18,6 +18,17 @@ int main(void) {
     NSString *restarted = configuredText(updated, 99);
     NSCAssert([restarted containsString:@"output_name = 99\n"] && ![restarted containsString:@"output_name = 47\n"], @"Handle changed display IDs");
     NSCAssert([configuredText(@"", 1) containsString:@"output_name = 1\n"], @"Support a new config");
+    NSCAssert(!shouldRestartDisplay(NO, NO), @"Do not restart before initial display setup");
+    NSCAssert(!shouldRestartDisplay(YES, YES), @"Keep running while the configured display is available");
+    NSCAssert(shouldRestartDisplay(YES, NO), @"Restart after an active display disappears");
+    CGDirectDisplayID activeIDs[] = {47, 99};
+    NSCAssert(containsDisplay(47, activeIDs, 2), @"Recognize a configured active display");
+    NSCAssert(!containsDisplay(75, activeIDs, 2), @"Reject a display that left the active list");
+    NSCAssert(!displayAvailable(kCGNullDirectDisplay), @"Reject a missing display");
+    CGDirectDisplayID fallback = activeFallbackDisplay();
+    NSCAssert(fallback == kCGNullDirectDisplay || displayAvailable(fallback), @"Fallback must be absent or captureable");
+    NSCAssert(!sunshineRunning() || [NSRunningApplication runningApplicationsWithBundleIdentifier:@"dev.lizardbyte.app.Sunshine"].count > 0,
+              @"Sunshine process detection must match the bundle lookup");
   }
   return 0;
 }

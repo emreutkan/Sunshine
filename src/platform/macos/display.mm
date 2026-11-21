@@ -6,6 +6,7 @@
 // standard includes
 #include <charconv>
 #include <chrono>
+#include <atomic>
 #include <optional>
 #include <string_view>
 
@@ -67,7 +68,10 @@ namespace platf {
     }
 
     capture_e capture(const push_captured_image_cb_t &push_captured_image_cb, const pull_free_image_cb_t &pull_free_image_cb, bool *cursor) override {
+      using clock = std::chrono::steady_clock;
+      auto last_frame = std::make_shared<std::atomic<clock::duration::rep>>(clock::now().time_since_epoch().count());
       auto signal = [av_capture capture:^(CMSampleBufferRef sampleBuffer) {
+        last_frame->store(clock::now().time_since_epoch().count());
         auto new_sample_buffer = std::make_shared<av_sample_buf_t>(sampleBuffer);
         auto new_pixel_buffer = std::make_shared<av_pixel_buf_t>(new_sample_buffer->buf);
 
@@ -105,8 +109,24 @@ namespace platf {
         return true;
       }];
 
-      // FIXME: We should time out if an image isn't returned for a while
-      dispatch_semaphore_wait(signal, DISPATCH_TIME_FOREVER);
+      if (!signal) {
+        return capture_e::error;
+      }
+      // A disappearing display may never call the delegate again. Check for it
+      // while waiting so shutdown cannot strand the capture thread indefinitely.
+      while (dispatch_semaphore_wait(signal, dispatch_time(DISPATCH_TIME_NOW, NSEC_PER_SEC)) != 0) {
+        if (!CGDisplayIsOnline(display_id)) {
+          BOOST_LOG(warning) << "Capture display disappeared while waiting for a frame."sv;
+          [av_capture cancelCapture:signal];
+          return capture_e::reinit;
+        }
+        const auto idle = clock::duration(clock::now().time_since_epoch().count() - last_frame->load());
+        if (idle > 5s) {
+          BOOST_LOG(warning) << "Capture stalled for 5 seconds without a frame."sv;
+          [av_capture cancelCapture:signal];
+          return capture_e::reinit;
+        }
+      }
 
       return capture_e::ok;
     }
@@ -184,7 +204,14 @@ namespace platf {
         return false;
       }];
 
-      dispatch_semaphore_wait(signal, DISPATCH_TIME_FOREVER);
+      if (!signal) {
+        return 1;
+      }
+      if (dispatch_semaphore_wait(signal, dispatch_time(DISPATCH_TIME_NOW, 5 * NSEC_PER_SEC)) != 0) {
+        BOOST_LOG(warning) << "Capture probe timed out waiting for a frame."sv;
+        [av_capture cancelCapture:signal];
+        return 1;
+      }
 
       return 0;
     }

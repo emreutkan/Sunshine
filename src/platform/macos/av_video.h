@@ -63,6 +63,8 @@ typedef bool (^FrameCallbackBlock)(CMSampleBufferRef);
  * @brief Capture signals property.
  */
 @property (nonatomic, assign) NSMapTable<AVCaptureConnection *, dispatch_semaphore_t> *captureSignals;
+/** @brief Delegate queues retained until their capture has fully stopped. */
+@property (nonatomic, assign) NSMapTable<AVCaptureConnection *, NSValue *> *captureQueues;
 
 /**
  * @brief Initialize AVFoundation capture for a display and frame rate.
@@ -87,5 +89,11 @@ typedef bool (^FrameCallbackBlock)(CMSampleBufferRef);
  * @return Capture status reported to the streaming pipeline.
  */
 - (dispatch_semaphore_t)capture:(FrameCallbackBlock)frameCallback;
+
+/**
+ * @brief Cancel a capture and wait for any in-flight delegate callback to finish.
+ * @param signal Semaphore returned by capture:.
+ */
+- (void)cancelCapture:(dispatch_semaphore_t)signal;
 
 @end

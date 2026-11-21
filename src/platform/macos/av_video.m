@@ -25,6 +25,7 @@
   self.videoOutputs = [[NSMapTable alloc] init];
   self.captureCallbacks = [[NSMapTable alloc] init];
   self.captureSignals = [[NSMapTable alloc] init];
+  self.captureQueues = [[NSMapTable alloc] init];
 
   CFRelease(mode);
 
@@ -45,6 +46,7 @@
 }
 
 - (void)dealloc {
+  [self.captureQueues release];
   [self.videoOutputs release];
   [self.captureCallbacks release];
   [self.captureSignals release];
@@ -92,14 +94,45 @@
     [self.videoOutputs setObject:videoOutput forKey:videoConnection];
     [self.captureCallbacks setObject:frameCallback forKey:videoConnection];
     [self.captureSignals setObject:signal forKey:videoConnection];
+    [self.captureQueues setObject:[NSValue valueWithPointer:recordingQueue] forKey:videoConnection];
 
     [self.session commitConfiguration];
 
-    // The session and videoOutputs both retain these now.
-    dispatch_release(recordingQueue);
+    // Keep the delegate queue alive until completion or cancellation drains it.
     [videoOutput release];
 
     return signal;
+  }
+}
+
+- (void)cancelCapture:(dispatch_semaphore_t)signal {
+  dispatch_queue_t queue = nil;
+  AVCaptureVideoDataOutput *output = nil;
+  @synchronized(self) {
+    AVCaptureConnection *matchingConnection = nil;
+    for (AVCaptureConnection *connection in self.captureSignals) {
+      if ([self.captureSignals objectForKey:connection] == signal) {
+        matchingConnection = connection;
+        break;
+      }
+    }
+    if (matchingConnection) {
+      output = [[self.videoOutputs objectForKey:matchingConnection] retain];
+      queue = (dispatch_queue_t) [[self.captureQueues objectForKey:matchingConnection] pointerValue];
+      [self.captureCallbacks removeObjectForKey:matchingConnection];
+      [self.videoOutputs removeObjectForKey:matchingConnection];
+      [self.captureSignals removeObjectForKey:matchingConnection];
+      [self.captureQueues removeObjectForKey:matchingConnection];
+    }
+  }
+  if (queue) {
+    [output setSampleBufferDelegate:nil queue:NULL];
+    [self.session beginConfiguration];
+    [self.session removeOutput:output];
+    [self.session commitConfiguration];
+    dispatch_sync(queue, ^{});
+    dispatch_release(queue);
+    [output release];
   }
 }
 
@@ -111,13 +144,19 @@
   if (callback != nil) {
     if (!callback(sampleBuffer)) {
       @synchronized(self) {
+        if ([self.captureCallbacks objectForKey:connection] != callback) {
+          return;
+        }
         [self.session beginConfiguration];
         [self.captureCallbacks removeObjectForKey:connection];
         [self.session removeOutput:[self.videoOutputs objectForKey:connection]];
         [self.videoOutputs removeObjectForKey:connection];
         dispatch_semaphore_signal([self.captureSignals objectForKey:connection]);
         [self.captureSignals removeObjectForKey:connection];
+        dispatch_queue_t queue = (dispatch_queue_t) [[self.captureQueues objectForKey:connection] pointerValue];
+        [self.captureQueues removeObjectForKey:connection];
         [self.session commitConfiguration];
+        dispatch_release(queue);
       }
     }
   }

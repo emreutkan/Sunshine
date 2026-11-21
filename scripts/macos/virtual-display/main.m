@@ -16,6 +16,7 @@
 @property unsigned int maxPixelsWide, maxPixelsHigh;
 @property CGPoint redPrimary, greenPrimary, bluePrimary, whitePoint;
 @property (strong) dispatch_queue_t queue;
+@property (copy) id terminationHandler;
 @end
 @interface CGVirtualDisplayMode: NSObject
 - (instancetype)initWithWidth:(unsigned int)width height:(unsigned int)height refreshRate:(double)rate;
@@ -23,6 +24,7 @@
 @interface CGVirtualDisplaySettings: NSObject
 @property (strong) NSArray *modes;
 @property unsigned int hiDPI;
+@property unsigned int rotation;
 @end
 @interface CGVirtualDisplay: NSObject
 @property (readonly) unsigned int displayID;
@@ -75,6 +77,73 @@ static void pump(void) {
 }
 
 /**
+ * @brief Decide whether a previously ready virtual display has disappeared.
+ * @param reported Whether the display completed initial mode setup.
+ * @param available Whether CoreGraphics still exposes the display and its mode.
+ * @return True when the helper must tear down and let launchd recreate the display.
+ */
+static BOOL shouldRestartDisplay(BOOL reported, BOOL available) {
+  return reported && !available;
+}
+
+/**
+ * @brief Check whether a display identifier occurs in a CoreGraphics list.
+ * @param displayID Identifier to find.
+ * @param displays Display identifiers returned by CoreGraphics.
+ * @param count Number of identifiers in displays.
+ * @return True when the display is in the list.
+ */
+static BOOL containsDisplay(CGDirectDisplayID displayID, const CGDirectDisplayID *displays, uint32_t count) {
+  for (uint32_t index = 0; index < count; index++) {
+    if (displays[index] == displayID) {
+      return YES;
+    }
+  }
+  return NO;
+}
+
+/**
+ * @brief Check whether a display is active with a captureable current mode.
+ * @param displayID CoreGraphics display identifier to validate.
+ * @return True while the display remains usable by screen capture.
+ */
+static BOOL displayAvailable(unsigned int displayID) {
+  CGDirectDisplayID displays[32];
+  uint32_t count = 0;
+  if (displayID == kCGNullDirectDisplay ||
+      CGGetActiveDisplayList(32, displays, &count) != kCGErrorSuccess ||
+      !containsDisplay(displayID, displays, count) ||
+      !CGDisplayIsActive(displayID)) {
+    return NO;
+  }
+  CGDisplayModeRef mode = CGDisplayCopyDisplayMode(displayID);
+  if (!mode) {
+    return NO;
+  }
+  BOOL usable = CGDisplayModeGetWidth(mode) >= 640 && CGDisplayModeGetHeight(mode) >= 480;
+  CGDisplayModeRelease(mode);
+  return usable;
+}
+
+/**
+ * @brief Find a captureable active display when macOS refuses virtual display creation.
+ * @return A usable CoreGraphics display identifier, or kCGNullDirectDisplay when none exists.
+ */
+static CGDirectDisplayID activeFallbackDisplay(void) {
+  CGDirectDisplayID displays[32];
+  uint32_t count = 0;
+  if (CGGetActiveDisplayList(32, displays, &count) != kCGErrorSuccess) {
+    return kCGNullDirectDisplay;
+  }
+  for (uint32_t index = 0; index < count; index++) {
+    if (displayAvailable(displays[index])) {
+      return displays[index];
+    }
+  }
+  return kCGNullDirectDisplay;
+}
+
+/**
  * @brief Stop Sunshine before changing its capture display or removing that display.
  * @return True if all Sunshine instances stopped.
  */
@@ -105,6 +174,16 @@ static BOOL stopSunshine(void) {
     }
   }
   return YES;
+}
+
+/** @brief Check whether the installed Sunshine app currently has a live process. */
+static BOOL sunshineRunning(void) {
+  for (NSRunningApplication *app in [NSRunningApplication runningApplicationsWithBundleIdentifier:@"dev.lizardbyte.app.Sunshine"]) {
+    if (!app.terminated) {
+      return YES;
+    }
+  }
+  return NO;
 }
 
 /**
@@ -180,9 +259,9 @@ int main(int argc, const char *argv[]) {
     signal(SIGINT, stopDisplay);
     signal(SIGTERM, stopDisplay);
     CGVirtualDisplayDescriptor *descriptor = [CGVirtualDisplayDescriptor new];
-    descriptor.name = @"Moonlight 1440p 180Hz";
+    descriptor.name = @"Moonlight 1440p 120Hz";
     descriptor.vendorID = 505;
-    descriptor.productID = 1440;
+    descriptor.productID = 0;
     descriptor.serialNum = 1440180;
     if ([descriptor respondsToSelector:@selector(setSerialNumber:)]) {
       descriptor.serialNumber = 1440180;
@@ -194,50 +273,80 @@ int main(int argc, const char *argv[]) {
     descriptor.greenPrimary = CGPointMake(0.30, 0.60);
     descriptor.bluePrimary = CGPointMake(0.15, 0.06);
     descriptor.whitePoint = CGPointMake(0.3127, 0.3290);
-    descriptor.queue = dispatch_get_main_queue();
+    descriptor.queue = dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_HIGH, 0);
+    descriptor.terminationHandler = nil;
     CGVirtualDisplay *display = [[CGVirtualDisplay alloc] initWithDescriptor:descriptor];
-    if (!display) {
-      fprintf(stderr, "macOS refused virtual display creation.\n");
-      return 1;
-    }
-    CGVirtualDisplaySettings *settings = [CGVirtualDisplaySettings new];
-    settings.hiDPI = 0;
-    CGVirtualDisplayMode *mode = [[CGVirtualDisplayMode alloc] initWithWidth:2560 height:1440 refreshRate:180];
-    if (!mode) {
-      fprintf(stderr, "macOS refused the 1440p/180 Hz mode.\n");
-      return 1;
-    }
-    settings.modes = @[mode];
-    if (![display applySettings:settings]) {
-      fprintf(stderr, "macOS refused display settings.\n");
-      return 1;
-    }
-    printf("Virtual display ID: %u. Requested 2560x1440 at 180 Hz.\nKeep this process running; Ctrl-C removes the display.\n", display.displayID);
-    fflush(stdout);
+    unsigned int managedDisplayID = display ? display.displayID : activeFallbackDisplay();
     BOOL reported = NO;
     int status = 0;
+    if (!display) {
+      if (!displayAvailable(managedDisplayID)) {
+        fprintf(stderr, "macOS refused virtual display creation and no active fallback display is available.\n");
+        return 1;
+      }
+      fprintf(stderr, "macOS refused virtual display creation; using active display %u until it becomes available.\n", managedDisplayID);
+      if (!startSunshine(managedDisplayID)) {
+        fprintf(stderr, "Sunshine startup failed for fallback display %u.\n", managedDisplayID);
+        return 1;
+      }
+      reported = YES;
+    }
+    if (display) {
+      CGVirtualDisplaySettings *settings = [CGVirtualDisplaySettings new];
+      settings.hiDPI = 0;
+      settings.rotation = 0;
+      CGVirtualDisplayMode *mode = [[CGVirtualDisplayMode alloc] initWithWidth:2560 height:1440 refreshRate:120];
+      if (!mode) {
+        fprintf(stderr, "macOS refused the 1440p/120 Hz mode.\n");
+        return 1;
+      }
+      settings.modes = @[mode];
+      if (![display applySettings:settings]) {
+        fprintf(stderr, "macOS refused display settings.\n");
+        return 1;
+      }
+      printf("Virtual display ID: %u. Requested 2560x1440 at 120 Hz.\nKeep this process running; Ctrl-C removes the display.\n", managedDisplayID);
+      fflush(stdout);
+    }
     NSDate *readyDeadline = [NSDate dateWithTimeIntervalSinceNow:15];
+    NSDate *nextSunshineCheck = [NSDate dateWithTimeIntervalSinceNow:5];
     while (!stopped) {
       [[NSRunLoop currentRunLoop] runUntilDate:[NSDate dateWithTimeIntervalSinceNow:0.25]];
+      if (shouldRestartDisplay(reported, displayAvailable(managedDisplayID))) {
+        fprintf(stderr, "Managed display %u disappeared; restarting the helper and Sunshine.\n", managedDisplayID);
+        status = 1;
+        break;
+      }
       if (!reported) {
-        CGDisplayModeRef actual = CGDisplayCopyDisplayMode(display.displayID);
+        CGDisplayModeRef actual = CGDisplayCopyDisplayMode(managedDisplayID);
         if (actual) {
           printf("macOS reports: %zux%zu at %.2f Hz\n", CGDisplayModeGetWidth(actual), CGDisplayModeGetHeight(actual), CGDisplayModeGetRefreshRate(actual));
           fflush(stdout);
-          BOOL correctMode = CGDisplayModeGetWidth(actual) == 2560 && CGDisplayModeGetHeight(actual) == 1440 && fabs(CGDisplayModeGetRefreshRate(actual) - 180) < 0.1;
+          BOOL correctMode = CGDisplayModeGetWidth(actual) == 2560 && CGDisplayModeGetHeight(actual) == 1440 && fabs(CGDisplayModeGetRefreshRate(actual) - 120) < 0.1;
           CGDisplayModeRelease(actual);
-          if (!correctMode || !startSunshine(display.displayID)) {
-            fprintf(stderr, "Virtual display mode or Sunshine startup failed.\n");
-            status = 1;
-            break;
+          if (correctMode) {
+            if (!startSunshine(managedDisplayID)) {
+              fprintf(stderr, "Sunshine startup failed for virtual display %u.\n", managedDisplayID);
+              status = 1;
+              break;
+            }
+            reported = YES;
           }
-          reported = YES;
         }
       }
       if (!reported && readyDeadline.timeIntervalSinceNow <= 0) {
         fprintf(stderr, "Timed out waiting for the virtual display.\n");
         status = 1;
         break;
+      }
+      if (reported && nextSunshineCheck.timeIntervalSinceNow <= 0) {
+        if (!sunshineRunning()) {
+          fprintf(stderr, "Sunshine is not running; relaunching it for display %u.\n", managedDisplayID);
+          if (!startSunshine(managedDisplayID)) {
+            fprintf(stderr, "Sunshine relaunch failed; retrying shortly.\n");
+          }
+        }
+        nextSunshineCheck = [NSDate dateWithTimeIntervalSinceNow:5];
       }
     }
     // Restore physical displays before the virtual display disappears.

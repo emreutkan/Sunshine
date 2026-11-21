@@ -1,4 +1,4 @@
-# Automatic 1440p / 180 Hz display for Sunshine
+# Automatic 1440p / 120 Hz display for Sunshine
 
 Requires this Sunshine branch installed as `/Applications/Sunshine.app`, macOS
 13 or later, and Apple's command-line build tools. The helper links only Apple
@@ -13,7 +13,7 @@ Install once from this checkout:
 
 Installation restarts Sunshine and replaces any helper installed by this setup.
 A per-user LaunchAgent then runs after login and restarts the helper if it exits.
-It creates a 2560×1440 / 180 Hz virtual display, reads its current display ID,
+It creates a 2560×1440 / 120 Hz virtual display, reads its current display ID,
 updates only the relevant Sunshine configuration keys, and starts Sunshine.
 The executable is copied to Application Support, so moving the checkout is safe.
 A local config backup is saved as `~/.config/sunshine/sunshine.conf.before-virtualdisplay`.
@@ -22,8 +22,8 @@ Credentials and pairing state are neither changed nor uploaded.
 Sunshine makes the virtual screen the only active display when the first client
 connects and restores the original physical displays when the last client
 leaves. The hidden Mac cursor and Windows-side Moonlight cursor behavior remain
-unchanged. Configure the Windows client for 2560×1440 / 180 FPS yourself; the
-virtual display's advertised refresh rate does not prove 180 FPS throughput.
+unchanged. Configure the Windows client for 2560×1440 / 120 FPS yourself; the
+virtual display's advertised refresh rate does not prove 120 FPS throughput.
 
 To stop the automation and Sunshine (physical screens are restored first):
 
