@@ -25,6 +25,12 @@ if [ -x "$support/virtual-display" ]; then
   "$support/virtual-display" --stop-sunshine || true
 fi
 launchctl bootout "$domain/$label" 2>/dev/null || true
+# bootout returns before the agent is gone; bootstrap fails until it is.
+tries=0
+while launchctl print "$domain/$label" >/dev/null 2>&1 && [ "$tries" -lt 30 ]; do
+  sleep 1
+  tries=$((tries + 1))
+done
 pkill -x Sunshine 2>/dev/null || true
 
 echo "Copying Sunshine.app to /Applications"
