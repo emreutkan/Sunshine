@@ -452,6 +452,8 @@ namespace video {
       vps = std::move(other.vps);
 
       inject = other.inject;
+      last_idr_request = other.last_idr_request;
+      requested_idr_pts = other.requested_idr_pts;
 
       return *this;
     }
@@ -474,6 +476,12 @@ namespace video {
      */
     void request_idr_frame() override {
       if (device && device->frame) {
+        const auto now = std::chrono::steady_clock::now();
+        if (is_redundant_idr_request(last_idr_request, now)) {
+          BOOST_LOG(debug) << "Merged a repeated IDR request into the IDR frame sent just before"sv;
+          return;
+        }
+        last_idr_request = now;
         auto &frame = device->frame;
         frame->pict_type = AV_PICTURE_TYPE_I;
         frame->flags |= AV_FRAME_FLAG_KEY;
@@ -512,6 +520,9 @@ namespace video {
 
     // inject sps/vps data into idr pictures
     int inject;  ///< Number of upcoming IDR frames that should receive rewritten parameter sets.
+
+    std::optional<std::chrono::steady_clock::time_point> last_idr_request;  ///< Time of the last honored IDR request.
+    std::optional<int64_t> requested_idr_pts;  ///< Timestamp of the frame that requested an IDR, until its packet arrives.
   };
 
   /**
@@ -1773,6 +1784,9 @@ namespace video {
   int encode_avcodec(int64_t frame_nr, avcodec_encode_session_t &session, safe::mail_raw_t::queue_t<packet_t> &packets, void *channel_data, std::optional<std::chrono::steady_clock::time_point> frame_timestamp) {
     auto &frame = session.device->frame;
     frame->pts = frame_nr;
+    if (frame->flags & AV_FRAME_FLAG_KEY) {
+      session.requested_idr_pts = frame_nr;
+    }
 
     auto &ctx = session.avcodec_ctx;
 
@@ -1803,8 +1817,12 @@ namespace video {
         BOOST_LOG(debug) << "Frame "sv << frame_nr << ": IDR Keyframe (AV_FRAME_FLAG_KEY)"sv;
       }
 
-      if ((frame->flags & AV_FRAME_FLAG_KEY) && !(av_packet->flags & AV_PKT_FLAG_KEY)) {
+      const bool packet_is_key = av_packet->flags & AV_PKT_FLAG_KEY;
+      if (missed_requested_idr(session.requested_idr_pts, av_packet->pts, packet_is_key)) {
         BOOST_LOG(error) << "Encoder did not produce IDR frame when requested!"sv;
+      }
+      if (session.requested_idr_pts && (packet_is_key || av_packet->pts >= *session.requested_idr_pts)) {
+        session.requested_idr_pts.reset();
       }
 
       if (session.inject) {
@@ -3003,6 +3021,14 @@ namespace video {
     }
 
     return flag;
+  }
+
+  bool is_redundant_idr_request(std::optional<std::chrono::steady_clock::time_point> last_idr_request, std::chrono::steady_clock::time_point now) {
+    return last_idr_request && now >= *last_idr_request && now - *last_idr_request < idr_coalesce_window;
+  }
+
+  bool missed_requested_idr(std::optional<int64_t> requested_idr_pts, int64_t packet_pts, bool packet_is_key) {
+    return requested_idr_pts && packet_pts == *requested_idr_pts && !packet_is_key;
   }
 
   /**

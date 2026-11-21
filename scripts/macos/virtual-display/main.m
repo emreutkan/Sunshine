@@ -239,6 +239,25 @@ static BOOL startSunshine(unsigned int displayID) {
   return completed && succeeded;
 }
 
+/**
+ * @brief Create the virtual display, retrying while macOS still holds the previous one.
+ * @param descriptor Display descriptor.
+ * @param attempts Number of attempts, 0.5 seconds apart.
+ * @return The display, or nil when every attempt was refused.
+ */
+static CGVirtualDisplay *createVirtualDisplay(CGVirtualDisplayDescriptor *descriptor, int attempts) {
+  for (int attempt = 0; attempt < attempts && !stopped; attempt++) {
+    CGVirtualDisplay *display = [[CGVirtualDisplay alloc] initWithDescriptor:descriptor];
+    if (display) {
+      return display;
+    }
+    for (int tick = 0; tick < 5 && !stopped; tick++) {
+      pump();
+    }
+  }
+  return nil;
+}
+
 /** @brief Create the display and keep it alive for Sunshine until termination. */
 int main(int argc, const char *argv[]) {
   @autoreleasepool {
@@ -275,7 +294,15 @@ int main(int argc, const char *argv[]) {
     descriptor.whitePoint = CGPointMake(0.3127, 0.3290);
     descriptor.queue = dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_HIGH, 0);
     descriptor.terminationHandler = nil;
-    CGVirtualDisplay *display = [[CGVirtualDisplay alloc] initWithDescriptor:descriptor];
+    NSString *started = [NSISO8601DateFormatter stringFromDate:[NSDate date] timeZone:NSTimeZone.localTimeZone
+                                                 formatOptions:NSISO8601DateFormatWithInternetDateTime];
+    fprintf(stdout, "[%s] Helper started.\n", started.UTF8String);
+    fprintf(stderr, "[%s] Helper started.\n", started.UTF8String);
+    fflush(stdout);
+    // macOS refuses a new display while the previous helper's display with the
+    // same serial number is still being torn down. Retry before falling back to
+    // a physical display, because a physical fallback can vanish when it sleeps.
+    CGVirtualDisplay *display = createVirtualDisplay(descriptor, 20);
     unsigned int managedDisplayID = display ? display.displayID : activeFallbackDisplay();
     BOOL reported = NO;
     int status = 0;

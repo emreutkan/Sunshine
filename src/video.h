@@ -6,6 +6,7 @@
 
 // standard includes
 #include <chrono>
+#include <optional>
 #include <string_view>
 
 // local includes
@@ -697,6 +698,38 @@ namespace video {
    * @return True when encoder validation matches `expect_failure`.
    */
   bool validate_encoder(encoder_t &encoder, bool expect_failure);
+
+  /**
+   * @brief Time after a forced IDR frame during which further IDR requests are merged into it.
+   *
+   * Without reference frame invalidation, Moonlight sends a new IDR request for every
+   * damaged frame it sees while it waits for the IDR. Requests that arrive while the
+   * first IDR is still on its way describe the same loss, and honoring each one sends
+   * several full frames back to back, which causes more loss on a weak network.
+   */
+  constexpr std::chrono::milliseconds idr_coalesce_window {50};
+
+  /**
+   * @brief Decide whether an IDR request repeats one that was honored a moment ago.
+   *
+   * @param last_idr_request Time of the last honored IDR request, if any.
+   * @param now Time of the new request.
+   * @return True when the new request falls inside `idr_coalesce_window`.
+   */
+  bool is_redundant_idr_request(std::optional<std::chrono::steady_clock::time_point> last_idr_request, std::chrono::steady_clock::time_point now);
+
+  /**
+   * @brief Decide whether the encoder output for a forced IDR frame is not a keyframe.
+   *
+   * Asynchronous encoders return packets for earlier frames, so the check compares the
+   * packet timestamp with the timestamp of the frame that requested the IDR.
+   *
+   * @param requested_idr_pts Timestamp of the frame that requested an IDR, if any.
+   * @param packet_pts Timestamp of the packet that the encoder returned.
+   * @param packet_is_key Whether the packet is a keyframe.
+   * @return True only when the packet belongs to the requesting frame and is not a keyframe.
+   */
+  bool missed_requested_idr(std::optional<int64_t> requested_idr_pts, int64_t packet_pts, bool packet_is_key);
 
   /**
    * @brief Probe encoders and select the preferred encoder.

@@ -326,3 +326,35 @@ TEST(SoftwareEncoderConversion, Bgr0AndNv12) {
   fallback_nv12_img.row_pitch = w;
   EXPECT_EQ(device.convert(fallback_nv12_img), 0);
 }
+
+/** @brief The first IDR request of a session is always honored. */
+TEST(IdrRequestTest, HonorsFirstRequest) {
+  EXPECT_FALSE(video::is_redundant_idr_request(std::nullopt, std::chrono::steady_clock::now()));
+}
+
+/** @brief Requests inside the merge window repeat the IDR just sent; later ones do not. */
+TEST(IdrRequestTest, MergesRepeatsInsideWindow) {
+  const auto sent = std::chrono::steady_clock::now();
+  EXPECT_TRUE(video::is_redundant_idr_request(sent, sent));
+  EXPECT_TRUE(video::is_redundant_idr_request(sent, sent + video::idr_coalesce_window - 1ms));
+  EXPECT_FALSE(video::is_redundant_idr_request(sent, sent + video::idr_coalesce_window));
+  EXPECT_FALSE(video::is_redundant_idr_request(sent, sent + 1s));
+}
+
+/** @brief A clock that goes backwards never suppresses a request. */
+TEST(IdrRequestTest, HonorsRequestBeforeLastOne) {
+  const auto sent = std::chrono::steady_clock::now();
+  EXPECT_FALSE(video::is_redundant_idr_request(sent, sent - 1ms));
+}
+
+/** @brief Packets of earlier frames from an asynchronous encoder are not a missed IDR. */
+TEST(IdrRequestTest, IgnoresPacketsOfEarlierFrames) {
+  EXPECT_FALSE(video::missed_requested_idr(10, 9, false));
+  EXPECT_FALSE(video::missed_requested_idr(std::nullopt, 10, false));
+}
+
+/** @brief Only the requesting frame's packet decides whether the IDR was produced. */
+TEST(IdrRequestTest, ChecksTheRequestingFrame) {
+  EXPECT_TRUE(video::missed_requested_idr(10, 10, false));
+  EXPECT_FALSE(video::missed_requested_idr(10, 10, true));
+}
