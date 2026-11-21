@@ -39,6 +39,8 @@
 
 # build directories
 build/
+build-*/
+dist/
 cmake-*/
 docs/doxyconfig*
 

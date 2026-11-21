@@ -36,29 +36,12 @@ configure_file(
         "${CMAKE_CURRENT_BINARY_DIR}/assets/web/images/logo-sunshine.svg"
         COPYONLY)
 
-# Copy the Virtual HID Driver icon for Windows tray notifications.
-if(WIN32)
-    configure_file(
-            "${CMAKE_SOURCE_DIR}/third-party/libvirtualhid/libvirtualhid.svg"
-            "${CMAKE_CURRENT_BINARY_DIR}/assets/web/images/logo-libvirtualhid.svg"
-            COPYONLY)
-endif()
-
 # install built vite assets
 install(DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}/assets/web"
         DESTINATION "${SUNSHINE_ASSETS_DIR}")
 
-# platform specific packaging
-if(WIN32)
-    include(${CMAKE_MODULE_PATH}/packaging/windows.cmake)
-elseif(UNIX)
-    include(${CMAKE_MODULE_PATH}/packaging/unix.cmake)
-
-    if(APPLE)
-        include(${CMAKE_MODULE_PATH}/packaging/macos.cmake)
-    else()
-        include(${CMAKE_MODULE_PATH}/packaging/linux.cmake)
-    endif()
-endif()
+# macOS definitions
+include(${CMAKE_MODULE_PATH}/packaging/unix.cmake)
+include(${CMAKE_MODULE_PATH}/packaging/macos.cmake)
 
 include(CPack)
