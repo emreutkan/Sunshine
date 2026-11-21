@@ -1,4 +1,14 @@
-# Sunshine (macOS cursor fork)
+# Sunshine (macOS-only fork)
+
+This branch builds only on macOS with Apple silicon. Windows, Linux and the
+installer packaging are removed.
+
+## Offline install
+
+`offline-kit/Sunshine-macOS-offline.zip` installs Sunshine on a Mac with no
+internet: unzip it, run `./install.sh`, then follow its steps. See
+`scripts/macos/offline-kit/README.md`. Rebuild the kit with
+`scripts/macos/offline-kit/make-kit.sh` after a change.
 
 ## Moonlight
 
@@ -23,15 +33,15 @@ the display mode on the way out and back in.
 Dependencies:
 
 ```bash
-brew install boost cmake miniupnpc ninja node openssl@3 opus pkg-config qtbase qtsvg
+brew install cmake miniupnpc ninja node openssl opus pkg-config
 ```
 
-Configure. Docs need doxygen+graphviz and fail the configure step without them,
-so they are off. The env vars only set the reported version string; without
-them it builds as 0.0.0:
+Configure. Boost and nlohmann_json download during the first configure; FFmpeg
+comes from `third-party/ffmpeg`. The env vars only set the reported version
+string; without them it builds as 0.0.0:
 
 ```bash
-BRANCH=master BUILD_VERSION=2026.826.1805 COMMIT=$(git rev-parse HEAD) cmake -B build -G Ninja -S . -DBUILD_DOCS=OFF -DBUILD_TESTS=OFF
+BRANCH=master BUILD_VERSION=2026.826.1805 COMMIT=$(git rev-parse HEAD) cmake -B build -G Ninja -S . -DBUILD_TESTS=OFF
 ```
 
 Build:
